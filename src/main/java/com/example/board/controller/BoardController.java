@@ -3,31 +3,49 @@ package com.example.board.controller;
 import com.example.board.dto.BoardRequestDto;
 import com.example.board.dto.BoardResponseDto;
 import com.example.board.entity.Board;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
+import org.springframework.jdbc.support.GeneratedKeyHolder;
+import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.Collections;
-import java.util.HashMap;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.List;
-import java.util.Map;
 
 @RestController
 @RequestMapping("/api/board")
 public class BoardController {
 
-    private final Map<Long, Board> boardList = new HashMap<>();
+    private final JdbcTemplate jdbcTemplate;
+
+    public BoardController(JdbcTemplate jdbcTemplate) {
+        this.jdbcTemplate = jdbcTemplate;
+    }
 
     @PostMapping("/create")
     public BoardResponseDto boardCreate(@RequestBody BoardRequestDto requestDto) {
         // 1. 사용자의 데이터 requestDto를 entity로 보내준다.
         Board board = new Board(requestDto);
 
-        // 게시판의 최대값 구해주기(MAX ID를 찾기)(ID 값으로 구분을 해주고, 중복이 있으면 안됨)
-        Long maxId = boardList.size() > 0 ? Collections.max(boardList.keySet()) + 1 : 1;
-        board.setId(maxId);
+        // 2. entity에서 DB로 보내준다.
+        KeyHolder keyHolder = new GeneratedKeyHolder(); // 기본 키를 반환받기 위한 객체
 
-        // 2. entity에 있는 데이터를 DB로 보내준다.
-        // DB가 없으므로 맵 컬렉션으로 보내준다.
-        boardList.put(board.getId(), board);
+        String sql = "INSERT INTO board (title, password, username, contents, date) VALUES (?, ?, ?, ?, ?)";
+        jdbcTemplate.update( con -> {
+                    PreparedStatement preparedStatement = con.prepareStatement(sql,
+                            Statement.RETURN_GENERATED_KEYS);
+
+                    preparedStatement.setString(1, board.getTitle());
+                    preparedStatement.setString(2, board.getPassword());
+                    preparedStatement.setString(3, board.getUsername());
+                    preparedStatement.setString(4, board.getContents());
+                    preparedStatement.setString(5, board.getContents_date());
+                    return preparedStatement;
+                },
+                keyHolder);
 
         // 3. entity에 있는 데이터를 responseDto로 보내준다.
         BoardResponseDto responseDto = new BoardResponseDto(board);
@@ -38,32 +56,43 @@ public class BoardController {
 
     @GetMapping("/list")
     public List<BoardResponseDto> boardList() {
-        // 1. DB에서 entity로 보내준다.
-        // DB가 없으므로 맵 컬렉션에서 가져온다.
-        List<BoardResponseDto> responseList = boardList.values().stream()
-                .map(BoardResponseDto::new).toList();
+        // 1. DB를 조회한다.
+        String sql = "SELECT * FROM board";
 
-        // 2. entity를 responseList에 보내준다.
+        return jdbcTemplate.query(sql, new RowMapper<BoardResponseDto>() {
+            @Override
+            public BoardResponseDto mapRow(ResultSet rs, int rowNum) throws SQLException {
+                // SQL 의 결과로 받아온 Memo 데이터들을 MemoResponseDto 타입으로 변환해줄 메서드
+                Long id = rs.getLong("id");
+                String title = rs.getString("title");
+                String password = rs.getString("password");
+                String username = rs.getString("username");
+                String contents = rs.getString("contents");
+                String date = rs.getString("date");
 
-        // 3. 사용자에게 responseList를 보내준다.
-        return responseList;
+                // 2. 사용자에게 responseDto를 반환한다.
+                return new BoardResponseDto(id, title, password, username, contents, date);
+            }
+        });
     }
 
     @PutMapping("/update/{id}")
     public Long boardUpdate(@PathVariable Long id,
                             @RequestBody BoardRequestDto requestDto) {
 
-        // 1. 해당 게시물이 DB에 존재하는지 확인하기 없다면 예외를 던져주기
-        if (boardList.containsKey(id)) {
-            // 2. DB에 존재하는 게시물 가져오기
-            // DB가 없으므로 맵 컬렉션에서 가져온다.
-            Board board = boardList.get(id);
+        // 1. 해당 게시물이 DB에 있는지 확인한다.
+        Board board = findById(id);
 
-            // 3. 해당 게시물 수정하기
-            board.update(requestDto);
+        // 2. 해당 게시물이 있다면 수정한다.
+        if(board != null) {
+            // memo 내용 수정
+            String sql = "UPDATE board SET title = ?, password = ?, username = ?, contents = ?, date = ? WHERE id = ?";
+            jdbcTemplate.update(sql, requestDto.getTitle(), requestDto.getPassword() ,requestDto.getUsername(), requestDto.getContents(),requestDto.getContents_date() ,id);
 
-            // 4. 해당 게시물 id를 사용자에게 보내준다.
-            return board.getId();
+            // 3. id를 반환한다.
+            return id;
+
+            // 4. 해당 게시물이 없다면 예외를 던진다.
         } else {
             throw new IllegalArgumentException("선택한 게시물은 존재하지 않습니다.");
         }
@@ -71,14 +100,39 @@ public class BoardController {
 
     @DeleteMapping("/delete/{id}")
     public Long boardDelete(@PathVariable Long id) {
-        // 1. 해당 게시물이 DB에 존재하는지 확인하기 없다면 예외를 던져주기
-        if (boardList.containsKey(id)) {
-            // 2. 해당 게시물 삭제하기
-            boardList.remove(id);
-            // 3. 해당 게시물 id를 사용자에게 보내준다.
+        // 1. 해당 게시물이 DB에 있는지 확인한다.
+        Board board = findById(id);
+
+        // 2. 해당 게시물이 있다면 삭제한다.
+        if(board != null) {
+            // 게시물 삭제
+            String sql = "DELETE FROM board WHERE id = ?";
+            jdbcTemplate.update(sql, id);
+
+            // 3. id를 반환한다.
             return id;
+
+            // 4. 해당 게시물이 없다면 예외를 던진다.
         } else {
             throw new IllegalArgumentException("선택한 게시물은 존재하지 않습니다.");
         }
+    }
+    private Board findById(Long id) {
+        // DB 조회
+        String sql = "SELECT * FROM board WHERE id = ?";
+
+        return jdbcTemplate.query(sql, resultSet -> {
+            if(resultSet.next()) {
+                Board board = new Board();
+                board.setTitle(resultSet.getString("title"));
+                board.setPassword(resultSet.getString("password"));
+                board.setUsername(resultSet.getString("username"));
+                board.setContents(resultSet.getString("contents"));
+                board.setContents_date(resultSet.getString("date"));
+                return board;
+            } else {
+                return null;
+            }
+        }, id);
     }
 }
